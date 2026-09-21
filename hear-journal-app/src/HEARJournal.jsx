@@ -4,17 +4,17 @@ import React, { useEffect, useMemo, useState } from 'react';
 // Reading plan, straight from the Built to Last Field Guide
 // ---------------------------------------------------------------------------
 const WEEKS = [
-  { week: 1, phase: 'Big Picture Pass', start: '2026-09-20', end: '2026-09-26', passage: 'James 1–5', chapters: [1, 2, 3, 4, 5], theme: 'Faith that Works', focus: 'Identify what real, active faith looks like.' },
+  { week: 1, phase: 'Big Picture Pass', start: '2026-09-20', end: '2026-09-26', passage: 'James 1–5', chapters: [1, 2, 3, 4, 5], theme: 'Faith that Works', focus: 'Identify what real, active faith looks like in your life.' },
   { week: 2, phase: 'Chapter by Chapter', start: '2026-09-27', end: '2026-10-03', passage: 'James 1', chapters: [1], theme: 'Trials & Discipline', focus: 'How God builds strength through pressure.' },
   { week: 3, phase: 'Chapter by Chapter', start: '2026-10-04', end: '2026-10-10', passage: 'James 2', chapters: [2], theme: 'Faith in Action', focus: 'Living out belief through actions.' },
-  { week: 4, phase: 'Chapter by Chapter', start: '2026-10-11', end: '2026-10-17', passage: 'James 3', chapters: [3], theme: 'Words & Wisdom', focus: 'Controlling speech and choosing wisdom.' },
+  { week: 4, phase: 'Chapter by Chapter', start: '2026-10-11', end: '2026-10-17', passage: 'James 3', chapters: [3], theme: 'Words & Wisdom', focus: 'Controlling Speech and choosing wisdom.' },
   { week: 5, phase: 'Chapter by Chapter', start: '2026-10-18', end: '2026-10-24', passage: 'James 4', chapters: [4], theme: 'Humility & Surrender', focus: 'Letting go of pride and submitting to God.' },
   { week: 6, phase: 'Chapter by Chapter', start: '2026-10-25', end: '2026-10-31', passage: 'James 5', chapters: [5], theme: 'Endurance & Prayer', focus: 'Staying steady and relying on prayer.' },
-  { week: 7, phase: 'Living Out the Themes', start: '2026-11-01', end: '2026-11-07', passage: 'James 1–2', chapters: [1, 2], theme: 'Integrity in Faith', focus: 'Aligning belief with behavior.' },
-  { week: 8, phase: 'Living Out the Themes', start: '2026-11-08', end: '2026-11-14', passage: 'James 3–4', chapters: [3, 4], theme: 'Mature Manhood', focus: 'Wisdom, humility, and perseverance.' },
-  { week: 9, phase: 'Living Out the Themes', start: '2026-11-15', end: '2026-11-21', passage: 'James 5', chapters: [5], theme: 'Finishing Strong', focus: 'What endurance, patience, and faithful prayer look like in your daily life.' },
-  { week: 10, phase: 'Living Out the Themes', start: '2026-11-22', end: '2026-11-28', passage: 'No reading', chapters: [], theme: 'Thanksgiving Break', focus: 'Pause, reflect, and practice gratitude.' },
-  { week: 11, phase: 'Living Out the Themes', start: '2026-11-29', end: '2026-12-04', passage: 'James 1–5', chapters: [1, 2, 3, 4, 5], theme: 'Final Immersion', focus: 'Read the full book again; focus on what stands out most and apply it daily.' },
+  { week: 7, phase: 'Identifying & Living Out Themes', start: '2026-11-01', end: '2026-11-07', passage: 'James 1–2', chapters: [1, 2], theme: 'Integrity in Faith', focus: 'Aligning belief with behavior.' },
+  { week: 8, phase: 'Identifying & Living Out Themes', start: '2026-11-08', end: '2026-11-14', passage: 'James 3–4', chapters: [3, 4], theme: 'Mature Manhood', focus: 'Wisdom, humility, and perseverance.' },
+  { week: 9, phase: 'Identifying & Living Out Themes', start: '2026-11-15', end: '2026-11-21', passage: 'James 5', chapters: [5], theme: 'Finishing Strong', focus: 'What does endurance, patience, and faithful prayer look like in your daily life.' },
+  { week: 10, phase: 'Identifying & Living Out Themes', start: '2026-11-22', end: '2026-11-28', passage: 'No reading', chapters: [], theme: 'Thanksgiving Break', focus: 'Pause, reflect, and practice gratitude.' },
+  { week: 11, phase: 'Identifying & Living Out Themes', start: '2026-11-29', end: '2026-12-04', passage: 'James 1–5', chapters: [1, 2, 3, 4, 5], theme: 'Final Immersion', focus: 'Read the full book again; focus on what stands out most and apply it daily.' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -240,6 +240,12 @@ function ProgressBar({ entries, today }) {
     </div>
   );
 }
+
+const PHASE_NOTES = {
+  'Big Picture Pass': 'Read James straight through to see the flow of the story.',
+  'Chapter by Chapter': 'Read slower, take in the Word reading throughout the same chapter multiple times in a week.',
+  'Identifying & Living Out Themes': 'Re-read James, highlight & apply manhood themes.',
+};
 
 const STATUS_LABEL = { done: 'Complete', current: 'This week', upcoming: 'Upcoming', partial: 'Started', missed: 'Not journaled' };
 
@@ -676,7 +682,12 @@ export default function HEARJournal() {
           const current = today >= w.start && today <= w.end;
           return (
             <React.Fragment key={w.week}>
-              {header && <div className="ruled tracked" style={{ fontSize: 12, margin: '22px 0 10px' }}>{header}</div>}
+              {header && (
+                <div style={{ margin: '22px 0 10px' }}>
+                  <div className="ruled tracked" style={{ fontSize: 12 }}>{header}</div>
+                  <p className="muted" style={{ fontSize: 14, textAlign: 'center', marginTop: 6 }}>{PHASE_NOTES[header]}</p>
+                </div>
+              )}
               <button className="panel entry-card" style={{ marginBottom: 8, display: 'flex', gap: 14, alignItems: 'center', borderColor: current ? 'var(--copper)' : undefined }}
                 onClick={() => openWeek(w.week)} aria-label={`Week ${w.week}, ${w.passage}, ${STATUS_LABEL[st.key]}`}>
                 <span aria-hidden="true" style={{ width: 30, height: 30, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid var(--rust)', borderRadius: 2, background: done ? 'var(--rust)' : 'transparent', color: done ? '#fbf6ef' : 'var(--copper)', fontFamily: 'var(--display)', fontSize: 20, paddingTop: 2 }}>
