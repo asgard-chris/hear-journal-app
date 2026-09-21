@@ -89,6 +89,22 @@ function weekForDate(ymd) {
   return found || WEEKS[WEEKS.length - 1];
 }
 
+// Journaling goal from the Field Guide check-in: "Did you journal at least twice?"
+// Thanksgiving week has no reading, so one reflection counts.
+const goalFor = (w) => (w.week === 10 ? 1 : 2);
+
+function entriesForWeek(entries, w) {
+  return entries.filter((e) => (e.week ? Number(e.week) === w.week : e.date >= w.start && e.date <= w.end));
+}
+
+function weekStatus(entries, w, today) {
+  const count = entriesForWeek(entries, w).length;
+  if (count >= goalFor(w)) return { key: 'done', count };
+  if (today >= w.start && today <= w.end) return { key: 'current', count };
+  if (w.start > today) return { key: 'upcoming', count };
+  return { key: count ? 'partial' : 'missed', count };
+}
+
 // ---------------------------------------------------------------------------
 // Storage: entries are kept per email, so signing out never erases them
 // ---------------------------------------------------------------------------
@@ -126,9 +142,9 @@ function loadEntries(email) {
   return list;
 }
 
-const blankEntry = (track) => {
+const blankEntry = (track, weekNum) => {
   const date = todayLocal();
-  const wk = weekForDate(date);
+  const wk = WEEKS.find((w) => w.week === weekNum) || weekForDate(date);
   return {
     id: '',
     date,
@@ -181,6 +197,52 @@ function TranslationPicker({ value, onChange }) {
   );
 }
 
+function Tally({ count, goal }) {
+  const boxes = [];
+  for (let i = 0; i < goal; i += 1) boxes.push(<span key={i} className={`tally ${count > i ? 'on' : ''}`} />);
+  let text = `${count} of ${goal} ${goal === 1 ? 'entry' : 'entries'}`;
+  if (count >= goal) text = `${count} ${count === 1 ? 'entry' : 'entries'}. Goal met.`;
+  return <span style={{ fontSize: 15 }}>{boxes}{text}</span>;
+}
+
+function WeekCard({ w, count, isCurrent, translation, onJournal }) {
+  return (
+    <section className="panel" style={{ padding: 20, marginBottom: 20 }}>
+      <div className="ruled tracked" style={{ fontSize: 13 }}>Week {w.week} of 11{isCurrent ? ' · This week' : ''}</div>
+      <h2 className="display" style={{ fontSize: 50, textAlign: 'center', margin: '12px 0 2px' }}>{w.passage}</h2>
+      <p className="display display-rust" style={{ fontSize: 28, textAlign: 'center' }}>{w.theme}</p>
+      <p className="muted" style={{ textAlign: 'center', fontSize: 15, margin: '4px 0 16px' }}>
+        {formatDate(w.start, { month: 'short', day: 'numeric' })} – {formatDate(w.end, { month: 'short', day: 'numeric' })} · {w.phase}
+      </p>
+      <div className="panel-framed" style={{ padding: '12px 14px', marginBottom: 16 }}>
+        <div className="label copper">H.E.A.R. focus</div>
+        <p>{w.focus}</p>
+      </div>
+      {w.chapters.length > 0 && <div style={{ marginBottom: 16 }}><ReadLinks chapters={w.chapters} translation={translation} /></div>}
+      <p style={{ marginBottom: 16 }}><Tally count={count} goal={goalFor(w)} /></p>
+      <button className="btn btn-primary" onClick={onJournal}>{w.week === 10 ? 'Write a reflection' : 'Journal this reading'}</button>
+    </section>
+  );
+}
+
+function ProgressBar({ entries, today }) {
+  const done = WEEKS.filter((w) => weekStatus(entries, w, today).key === 'done').length;
+  return (
+    <div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(11, 1fr)', gap: 4 }} aria-hidden="true">
+        {WEEKS.map((w) => {
+          const st = weekStatus(entries, w, today).key;
+          const bg = st === 'done' ? 'var(--copper)' : st === 'current' ? 'rgba(207,129,80,0.35)' : 'var(--char)';
+          return <span key={w.week} style={{ height: 8, borderRadius: 1, background: bg, border: st === 'current' ? '1px solid var(--copper)' : '1px solid var(--line)' }} />;
+        })}
+      </div>
+      <p className="muted" style={{ fontSize: 14, marginTop: 6 }}>{done} of 11 weeks complete</p>
+    </div>
+  );
+}
+
+const STATUS_LABEL = { done: 'Complete', current: 'This week', upcoming: 'Upcoming', partial: 'Started', missed: 'Not journaled' };
+
 // ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
@@ -197,6 +259,7 @@ export default function HEARJournal() {
   });
   const [draft, setDraft] = useState(null);
   const [openId, setOpenId] = useState(null);
+  const [weekNum, setWeekNum] = useState(null);
   const [notice, setNotice] = useState('');
 
   const translation = (user && user.translation) || 'ESV';
@@ -218,7 +281,7 @@ export default function HEARJournal() {
     [entries]
   );
 
-  const thisWeekCount = entries.filter((e) => e.date >= thisWeek.start && e.date <= thisWeek.end).length;
+  const thisWeekCount = entriesForWeek(entries, thisWeek).length;
 
   const saveUser = (next) => {
     setUser(next);
@@ -233,8 +296,8 @@ export default function HEARJournal() {
   };
 
   // ---- actions
-  const startNew = () => {
-    setDraft(blankEntry(user.track));
+  const startNew = (num) => {
+    setDraft(blankEntry(user.track, typeof num === 'number' ? num : undefined));
     setView('form');
   };
 
@@ -260,7 +323,7 @@ export default function HEARJournal() {
     }
     persistEntries(next);
     setDraft(null);
-    setView('home');
+    setView(weekNum ? 'week' : 'home');
     setNotice('Entry saved.');
   };
 
@@ -268,7 +331,7 @@ export default function HEARJournal() {
     if (!window.confirm('Delete this entry? This can’t be undone.')) return;
     persistEntries(entries.filter((e) => e.id !== id));
     setOpenId(null);
-    setView('home');
+    setView(weekNum ? 'week' : 'home');
     setNotice('Entry deleted.');
   };
 
@@ -358,7 +421,7 @@ export default function HEARJournal() {
     return (
       <div className="shell">
         {toast}
-        <button className="btn btn-ghost btn-small" onClick={() => { setDraft(null); setView('home'); }}>Back</button>
+        <button className="btn btn-ghost btn-small" onClick={() => { setDraft(null); setView(weekNum ? 'week' : 'home'); }}>Back</button>
 
         <h1 className="display" style={{ fontSize: 44, margin: '22px 0 4px' }}>{draft.id ? 'Edit entry' : 'New entry'}</h1>
         <p className="muted" style={{ marginBottom: 24 }}>Read it. Journal it. Apply it.</p>
@@ -430,7 +493,7 @@ export default function HEARJournal() {
     return (
       <div className="shell">
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-          <button className="btn btn-ghost btn-small" onClick={() => setView('home')}>Back</button>
+          <button className="btn btn-ghost btn-small" onClick={() => setView(weekNum ? 'week' : 'home')}>Back</button>
           <button className="btn btn-ghost btn-small" onClick={() => startEdit(e)}>Edit</button>
         </div>
 
@@ -455,6 +518,99 @@ export default function HEARJournal() {
     );
   }
 
+  const entryList = (list) => (
+    <div style={{ display: 'grid', gap: 10 }}>
+      {list.map((e) => (
+        <button key={e.id} className="panel entry-card" onClick={() => { setOpenId(e.id); setView('entry'); }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+            <span className="label muted" style={{ fontSize: 14 }}>{formatDate(e.date)}</span>
+            {e.week ? <span className="label copper" style={{ fontSize: 14 }}>Week {e.week}</span> : null}
+          </div>
+          <div className="display" style={{ fontSize: 26, marginTop: 2 }}>{e.passage}</div>
+          {e.highlight && (
+            <p className="muted" style={{ fontSize: 15, marginTop: 4, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
+              {e.highlight}
+            </p>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+
+  const openWeek = (num) => { setWeekNum(num); setView('week'); };
+  const goHome = () => { setWeekNum(null); setView('home'); };
+
+  // =========================================================================
+  // THE PLAN (all 11 weeks)
+  // =========================================================================
+  if (view === 'plan') {
+    let lastPhase = '';
+    return (
+      <div className="shell">
+        <button className="btn btn-ghost btn-small" onClick={goHome}>Back</button>
+        <h1 className="display" style={{ fontSize: 48, margin: '22px 0 4px' }}>The Challenge</h1>
+        <p className="muted" style={{ marginBottom: 16 }}>A week is checked off when you journal at least twice.</p>
+        <div style={{ marginBottom: 24 }}><ProgressBar entries={entries} today={today} /></div>
+
+        {WEEKS.map((w) => {
+          const st = weekStatus(entries, w, today);
+          const header = w.phase !== lastPhase ? w.phase : null;
+          lastPhase = w.phase;
+          const done = st.key === 'done';
+          const current = today >= w.start && today <= w.end;
+          return (
+            <React.Fragment key={w.week}>
+              {header && <div className="ruled tracked" style={{ fontSize: 12, margin: '22px 0 10px' }}>{header}</div>}
+              <button className="panel entry-card" style={{ marginBottom: 8, display: 'flex', gap: 14, alignItems: 'center', borderColor: current ? 'var(--copper)' : undefined }}
+                onClick={() => openWeek(w.week)} aria-label={`Week ${w.week}, ${w.passage}, ${STATUS_LABEL[st.key]}`}>
+                <span aria-hidden="true" style={{ width: 30, height: 30, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid var(--rust)', borderRadius: 2, background: done ? 'var(--rust)' : 'transparent', color: done ? '#fbf6ef' : 'var(--copper)', fontFamily: 'var(--display)', fontSize: 20, paddingTop: 2 }}>
+                  {done ? '✓' : w.week}
+                </span>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span className="display" style={{ fontSize: 24, display: 'block' }}>{w.passage} <span className="display-rust" style={{ fontSize: 20 }}>{w.theme}</span></span>
+                  <span className="muted" style={{ fontSize: 14 }}>
+                    {formatDate(w.start, { month: 'short', day: 'numeric' })} – {formatDate(w.end, { month: 'short', day: 'numeric' })} · {STATUS_LABEL[st.key]}{st.count && !done ? ` (${st.count} of ${goalFor(w)})` : ''}
+                  </span>
+                </span>
+              </button>
+            </React.Fragment>
+          );
+        })}
+
+        <div className="panel-framed" style={{ padding: '14px 16px', marginTop: 18 }}>
+          <div className="display display-rust" style={{ fontSize: 24 }}>Saturday, Dec 5</div>
+          <p>Final Brotherhood Challenge gathering. Celebrate, and encourage one another with the theme that shaped you most.</p>
+        </div>
+      </div>
+    );
+  }
+
+  // =========================================================================
+  // ONE WEEK
+  // =========================================================================
+  if (view === 'week' && weekNum) {
+    const w = WEEKS.find((x) => x.week === weekNum);
+    const list = sorted.filter((e) => entriesForWeek([e], w).length);
+    const prev = WEEKS.find((x) => x.week === weekNum - 1);
+    const next = WEEKS.find((x) => x.week === weekNum + 1);
+    return (
+      <div className="shell">
+        {toast}
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 18 }}>
+          <button className="btn btn-ghost btn-small" onClick={() => setView('plan')}>All weeks</button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-ghost btn-small" disabled={!prev} style={{ opacity: prev ? 1 : 0.35 }} onClick={() => prev && setWeekNum(prev.week)} aria-label="Previous week">‹ Wk {prev ? prev.week : ''}</button>
+            <button className="btn btn-ghost btn-small" disabled={!next} style={{ opacity: next ? 1 : 0.35 }} onClick={() => next && setWeekNum(next.week)} aria-label="Next week">Wk {next ? next.week : ''} ›</button>
+          </div>
+        </div>
+        <WeekCard w={w} count={list.length} isCurrent={today >= w.start && today <= w.end} translation={translation} onJournal={() => startNew(w.week)} />
+        <h2 className="display" style={{ fontSize: 30, margin: '8px 0 12px' }}>Week {w.week} entries</h2>
+        {list.length ? entryList(list) : <div className="panel" style={{ padding: 20 }}><p>No entries for this week yet.</p></div>}
+        <button className="btn btn-ghost btn-small" style={{ marginTop: 20 }} onClick={goHome}>Home</button>
+      </div>
+    );
+  }
+
   // =========================================================================
   // HOME
   // =========================================================================
@@ -473,25 +629,16 @@ export default function HEARJournal() {
       </header>
 
       {user.track === 'challenge' && (
-        <section className="panel" style={{ padding: 20, marginBottom: 20 }}>
-          <div className="ruled tracked" style={{ fontSize: 13 }}>Week {thisWeek.week} of 11</div>
-          <h2 className="display" style={{ fontSize: 50, textAlign: 'center', margin: '12px 0 2px' }}>{thisWeek.passage}</h2>
-          <p className="display display-rust" style={{ fontSize: 28, textAlign: 'center' }}>{thisWeek.theme}</p>
-          <p className="muted" style={{ textAlign: 'center', fontSize: 15, margin: '4px 0 16px' }}>
-            {formatDate(thisWeek.start, { month: 'short', day: 'numeric' })} – {formatDate(thisWeek.end, { month: 'short', day: 'numeric' })} · {thisWeek.phase}
-          </p>
-          <div className="panel-framed" style={{ padding: '12px 14px', marginBottom: 16 }}>
-            <div className="label copper">H.E.A.R. focus</div>
-            <p>{thisWeek.focus}</p>
-          </div>
-          <div style={{ marginBottom: 16 }}><ReadLinks chapters={thisWeek.chapters} translation={translation} /></div>
-          <p style={{ fontSize: 15, marginBottom: 16 }}>
-            <span className={`tally ${thisWeekCount >= 1 ? 'on' : ''}`} />
-            <span className={`tally ${thisWeekCount >= 2 ? 'on' : ''}`} />
-            {thisWeekCount >= 2 ? `${thisWeekCount} entries this week. Goal met.` : `${thisWeekCount} of 2 entries this week`}
-          </p>
-          <button className="btn btn-primary" onClick={startNew}>Journal this reading</button>
-        </section>
+        <>
+          <button className="panel entry-card" style={{ marginBottom: 14, padding: '14px 16px' }} onClick={() => setView('plan')}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+              <span className="display" style={{ fontSize: 22 }}>Your challenge progress</span>
+              <span className="label copper" style={{ fontSize: 14 }}>See all weeks ›</span>
+            </div>
+            <ProgressBar entries={entries} today={today} />
+          </button>
+          <WeekCard w={thisWeek} count={thisWeekCount} isCurrent={today >= thisWeek.start && today <= thisWeek.end} translation={translation} onJournal={() => startNew(thisWeek.week)} />
+        </>
       )}
 
       {user.track !== 'challenge' && (
@@ -507,24 +654,7 @@ export default function HEARJournal() {
         <div className="panel" style={{ padding: 20 }}>
           <p>Nothing here yet. Read this week’s passage, then write your first H.E.A.R. entry.</p>
         </div>
-      ) : (
-        <div style={{ display: 'grid', gap: 10 }}>
-          {sorted.map((e) => (
-            <button key={e.id} className="panel entry-card" onClick={() => { setOpenId(e.id); setView('entry'); }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-                <span className="label muted" style={{ fontSize: 14 }}>{formatDate(e.date)}</span>
-                {e.week ? <span className="label copper" style={{ fontSize: 14 }}>Week {e.week}</span> : null}
-              </div>
-              <div className="display" style={{ fontSize: 26, marginTop: 2 }}>{e.passage}</div>
-              {e.highlight && (
-                <p className="muted" style={{ fontSize: 15, marginTop: 4, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
-                  {e.highlight}
-                </p>
-              )}
-            </button>
-          ))}
-        </div>
-      )}
+      ) : entryList(sorted)}
 
       <footer style={{ marginTop: 36, display: 'grid', gap: 16 }}>
         <TranslationPicker value={translation} onChange={(t) => saveUser({ ...user, translation: t })} />
