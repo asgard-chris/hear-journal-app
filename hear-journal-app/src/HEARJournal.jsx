@@ -246,6 +246,34 @@ const STATUS_LABEL = { done: 'Complete', current: 'This week', upcoming: 'Upcomi
 // ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Server sync
+// ---------------------------------------------------------------------------
+const isServerId = (id) => /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(String(id || ''));
+const deletesKey = (email) => `hear:deletes:${email.trim().toLowerCase()}`;
+
+async function api(path, { method = 'GET', body, token } = {}) {
+  let res;
+  try {
+    res = await fetch(`/api/${path}`, {
+      method,
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (e) {
+    const err = new Error('You appear to be offline.');
+    err.offline = true;
+    throw err;
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || 'Something went wrong. Try again.');
+    err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+
 export default function HEARJournal() {
   const [user, setUser] = useState(() => readJSON(USER_KEY, null));
   const [entries, setEntries] = useState(() => {
@@ -254,21 +282,24 @@ export default function HEARJournal() {
   });
   const [view, setView] = useState(() => {
     const u = readJSON(USER_KEY, null);
-    if (!u) return 'welcome';
+    if (!u || !u.token) return 'welcome';
     return u.track ? 'home' : 'track';
   });
   const [draft, setDraft] = useState(null);
   const [openId, setOpenId] = useState(null);
   const [weekNum, setWeekNum] = useState(null);
   const [notice, setNotice] = useState('');
+  const [syncState, setSyncState] = useState('idle'); // idle | syncing | synced | offline
 
   const translation = (user && user.translation) || 'ESV';
   const today = todayLocal();
   const thisWeek = weekForDate(today);
+  const token = user && user.token;
+  const email = user && user.email;
 
   useEffect(() => {
     if (!notice) return undefined;
-    const t = setTimeout(() => setNotice(''), 2800);
+    const t = setTimeout(() => setNotice(''), 3200);
     return () => clearTimeout(t);
   }, [notice]);
 
@@ -277,23 +308,72 @@ export default function HEARJournal() {
   }, [view]);
 
   const sorted = useMemo(
-    () => [...entries].sort((a, b) => (b.date === a.date ? Number(b.id) - Number(a.id) : b.date.localeCompare(a.date))),
+    () => [...entries].sort((a, b) => (b.date === a.date ? (b.created || 0) - (a.created || 0) : b.date.localeCompare(a.date))),
     [entries]
   );
 
   const thisWeekCount = entriesForWeek(entries, thisWeek).length;
+  const pendingCount = entries.filter((e) => !isServerId(e.id) || e.pending).length;
 
   const saveUser = (next) => {
     setUser(next);
-    writeJSON(USER_KEY, next);
+    if (next) writeJSON(USER_KEY, next);
   };
 
-  const persistEntries = (next) => {
-    setEntries(next);
-    if (!writeJSON(entriesKey(user.email), next)) {
-      setNotice('Couldn’t save on this device. Private Browsing may be on.');
+  const cache = (list, forEmail = email) => {
+    if (forEmail) writeJSON(entriesKey(forEmail), list);
+  };
+
+  const expireSession = () => {
+    const u = readJSON(USER_KEY, null);
+    if (u) writeJSON(USER_KEY, { ...u, token: null });
+    setUser((prev) => (prev ? { ...prev, token: null } : prev));
+    setView('welcome');
+    setNotice('Please sign in again.');
+  };
+
+  // Push anything saved offline, apply offline deletes, then pull the server copy.
+  const sync = async (tok, forEmail, localList) => {
+    setSyncState('syncing');
+    try {
+      const deletes = readJSON(deletesKey(forEmail), []);
+      for (const id of deletes) {
+        // eslint-disable-next-line no-await-in-loop
+        await api(`entries?id=${encodeURIComponent(id)}`, { method: 'DELETE', token: tok }).catch((e) => {
+          if (e.offline || e.status === 401) throw e;
+        });
+      }
+      writeJSON(deletesKey(forEmail), []);
+
+      let working = [...localList];
+      for (const e of localList.filter((x) => !isServerId(x.id) || x.pending)) {
+        const body = { ...e, id: isServerId(e.id) ? e.id : undefined };
+        // eslint-disable-next-line no-await-in-loop
+        const { entry } = await api('entries', { method: 'POST', body: { entry: body }, token: tok });
+        working = working.map((x) => (x.id === e.id ? entry : x));
+        cache(working, forEmail); // record each upload so a dropped connection can't duplicate it
+      }
+
+      const { entries: server } = await api('entries', { token: tok });
+      setEntries(server);
+      cache(server, forEmail);
+      setSyncState('synced');
+    } catch (e) {
+      if (e.status === 401) { expireSession(); return; }
+      setSyncState(e.offline ? 'offline' : 'idle');
+      if (!e.offline) setNotice(e.message);
     }
   };
+
+  // Sync when the app opens and whenever the phone comes back online
+  useEffect(() => {
+    if (!token) return undefined;
+    sync(token, email, readJSON(entriesKey(email), []));
+    const onOnline = () => sync(token, email, readJSON(entriesKey(email), []));
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, email]);
 
   // ---- actions
   const startNew = (num) => {
@@ -306,7 +386,7 @@ export default function HEARJournal() {
     setView('form');
   };
 
-  const saveDraft = () => {
+  const saveDraft = async () => {
     if (!draft.passage.trim()) {
       setNotice('Add the passage you read.');
       return;
@@ -315,31 +395,60 @@ export default function HEARJournal() {
       setNotice('Write at least one part of H.E.A.R. before saving.');
       return;
     }
-    let next;
-    if (draft.id) {
-      next = entries.map((e) => (e.id === draft.id ? { ...draft, updated: Date.now() } : e));
-    } else {
-      next = [...entries, { ...draft, id: String(Date.now()) }];
-    }
-    persistEntries(next);
+    const localId = draft.id || `local-${Date.now()}`;
+    const record = { ...draft, id: localId, created: draft.created || Date.now(), pending: true };
+    const optimistic = draft.id ? entries.map((e) => (e.id === draft.id ? record : e)) : [...entries, record];
+    setEntries(optimistic);
+    cache(optimistic);
     setDraft(null);
     setView(weekNum ? 'week' : 'home');
-    setNotice('Entry saved.');
+
+    try {
+      const body = { ...record, id: isServerId(localId) ? localId : undefined };
+      const { entry } = await api('entries', { method: 'POST', body: { entry: body }, token });
+      setEntries((cur) => {
+        const next = cur.map((e) => (e.id === localId ? entry : e));
+        cache(next);
+        return next;
+      });
+      setSyncState('synced');
+      setNotice('Entry saved.');
+    } catch (e) {
+      if (e.status === 401) { expireSession(); return; }
+      setSyncState(e.offline ? 'offline' : 'idle');
+      setNotice(e.offline ? 'Saved on this phone. It will sync when you’re back online.' : `Saved on this phone, but not synced yet: ${e.message}`);
+    }
   };
 
-  const deleteEntry = (id) => {
+  const deleteEntry = async (id) => {
     if (!window.confirm('Delete this entry? This can’t be undone.')) return;
-    persistEntries(entries.filter((e) => e.id !== id));
+    const next = entries.filter((e) => e.id !== id);
+    setEntries(next);
+    cache(next);
     setOpenId(null);
     setView(weekNum ? 'week' : 'home');
-    setNotice('Entry deleted.');
+    if (!isServerId(id)) { setNotice('Entry deleted.'); return; }
+    try {
+      await api(`entries?id=${encodeURIComponent(id)}`, { method: 'DELETE', token });
+      setNotice('Entry deleted.');
+    } catch (e) {
+      if (e.status === 401) { expireSession(); return; }
+      writeJSON(deletesKey(email), [...readJSON(deletesKey(email), []), id]);
+      setNotice('Deleted here. It will be removed everywhere when you’re back online.');
+    }
   };
 
   const signOut = () => {
-    if (!window.confirm('Sign out? Your entries stay saved on this device. Sign back in with the same email to see them.')) return;
+    const warn = pendingCount
+      ? `You have ${pendingCount} ${pendingCount === 1 ? 'entry' : 'entries'} not synced yet. Signing out now will lose ${pendingCount === 1 ? 'it' : 'them'}. Sign out anyway?`
+      : 'Sign out of this device? Your entries are safe and will be here when you sign back in.';
+    if (!window.confirm(warn)) return;
     localStorage.removeItem(USER_KEY);
+    localStorage.removeItem(entriesKey(email));
+    localStorage.removeItem(deletesKey(email));
     setUser(null);
     setEntries([]);
+    setSyncState('idle');
     setView('welcome');
   };
 
@@ -373,15 +482,22 @@ export default function HEARJournal() {
   ) : null;
 
   // =========================================================================
-  // WELCOME
+  // WELCOME / SIGN IN
   // =========================================================================
-  if (view === 'welcome') {
-    return <Welcome onDone={(name, email) => {
-      const u = { name: name.trim(), email: email.trim(), track: null, translation: 'ESV' };
-      saveUser(u);
-      setEntries(loadEntries(u.email));
-      setView('track');
-    }} />;
+  if (view === 'welcome' || !user || !user.token) {
+    return (
+      <Welcome
+        initialEmail={(user && user.email) || ''}
+        onSignedIn={(serverUser, tok) => {
+          const prior = readJSON(USER_KEY, null);
+          const keep = prior && prior.email === serverUser.email ? prior : {};
+          const u = { track: null, translation: 'ESV', ...keep, name: serverUser.name, email: serverUser.email, token: tok };
+          saveUser(u);
+          setEntries(loadEntries(u.email));
+          setView(u.track ? 'home' : 'track');
+        }}
+      />
+    );
   }
 
   // =========================================================================
@@ -659,7 +775,10 @@ export default function HEARJournal() {
       <footer style={{ marginTop: 36, display: 'grid', gap: 16 }}>
         <TranslationPicker value={translation} onChange={(t) => saveUser({ ...user, translation: t })} />
         <p className="muted" style={{ fontSize: 14 }}>
-          Entries are saved on this device only. <button className="link" style={{ background: 'none', border: 0, padding: 0, font: 'inherit' }} onClick={downloadJournal}>Download a copy</button> anytime.
+          {syncState === 'syncing' && 'Syncing… '}
+          {syncState !== 'syncing' && pendingCount > 0 && `${pendingCount} ${pendingCount === 1 ? 'entry' : 'entries'} waiting to sync. `}
+          {syncState !== 'syncing' && pendingCount === 0 && 'Synced to your account. Sign in on any device to see your entries. '}
+          <button className="link" style={{ background: 'none', border: 0, padding: 0, font: 'inherit' }} onClick={downloadJournal}>Download a copy</button>
         </p>
         <p className="muted" style={{ fontSize: 14 }}>
           Switch to <button className="link" style={{ background: 'none', border: 0, padding: 0, font: 'inherit' }} onClick={() => setView('track')}>{user.track === 'challenge' ? 'journaling on your own' : 'the Challenge plan'}</button>
@@ -670,18 +789,71 @@ export default function HEARJournal() {
 }
 
 // ---------------------------------------------------------------------------
-// Welcome screen: the Field Guide cover is the hero
+// Welcome + sign in: the Field Guide cover is the hero
 // ---------------------------------------------------------------------------
-function Welcome({ onDone }) {
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const [error, setError] = useState('');
+function PinInput({ id, value, onChange, autoFocus }) {
+  return (
+    <input
+      id={id}
+      className="field"
+      style={{ marginTop: 6, letterSpacing: '0.6em', fontSize: 26, textAlign: 'center', fontFamily: 'var(--display)' }}
+      type="password"
+      inputMode="numeric"
+      pattern="[0-9]*"
+      autoComplete="off"
+      maxLength={4}
+      autoFocus={autoFocus}
+      value={value}
+      onChange={(e) => onChange(e.target.value.replace(/\D/g, '').slice(0, 4))}
+    />
+  );
+}
 
-  const submit = (ev) => {
+function Welcome({ initialEmail, onSignedIn }) {
+  const [step, setStep] = useState('email'); // email | pin | create
+  const [email, setEmail] = useState(initialEmail || '');
+  const [name, setName] = useState('');
+  const [pin, setPin] = useState('');
+  const [pin2, setPin2] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const run = async (fn) => {
+    setBusy(true);
+    setError('');
+    try { await fn(); } catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
+
+  const submitEmail = (ev) => {
     ev.preventDefault();
-    if (!name.trim()) return setError('Enter your first name.');
-    if (!/^\S+@\S+\.\S+$/.test(email.trim())) return setError('Enter a valid email. It’s how the app finds your entries.');
-    return onDone(name, email);
+    if (!/^\S+@\S+\.\S+$/.test(email.trim())) { setError('Enter a valid email.'); return; }
+    run(async () => {
+      const r = await api('auth', { method: 'POST', body: { action: 'check', email } });
+      setPin('');
+      setPin2('');
+      if (r.exists && r.hasPin) setStep('pin');
+      else { setName(r.name || ''); setStep('create'); }
+    });
+  };
+
+  const submitPin = (ev) => {
+    ev.preventDefault();
+    if (pin.length !== 4) { setError('Enter your 4-digit PIN.'); return; }
+    run(async () => {
+      const r = await api('auth', { method: 'POST', body: { action: 'signin', email, pin } });
+      onSignedIn(r.user, r.token);
+    });
+  };
+
+  const submitCreate = (ev) => {
+    ev.preventDefault();
+    if (!name.trim()) { setError('Enter your first name.'); return; }
+    if (pin.length !== 4) { setError('Choose a 4-digit PIN.'); return; }
+    if (pin !== pin2) { setError('The two PINs don’t match.'); return; }
+    run(async () => {
+      const r = await api('auth', { method: 'POST', body: { action: 'signin', email, pin, name } });
+      onSignedIn(r.user, r.token);
+    });
   };
 
   return (
@@ -690,22 +862,58 @@ function Welcome({ onDone }) {
         <img src="/cover.jpg" alt="The Brotherhood Challenge. Real Manhood: Built to Last. Field Guide, the Book of James." style={{ width: '100%', display: 'block' }} />
         <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 120, background: 'linear-gradient(transparent, var(--ink))' }} />
       </div>
-      <form className="shell" style={{ paddingTop: 8, maxWidth: 520 }} onSubmit={submit} noValidate>
+      <div className="shell" style={{ paddingTop: 8, maxWidth: 520 }}>
         <div className="ruled tracked" style={{ fontSize: 14, marginBottom: 18 }}>H.E.A.R. Journal</div>
-        <div style={{ display: 'grid', gap: 14 }}>
-          <label>
-            <span className="label">First name</span>
-            <input className="field" style={{ marginTop: 6 }} autoComplete="given-name" value={name} onChange={(e) => setName(e.target.value)} />
-          </label>
-          <label>
-            <span className="label">Email</span>
-            <input className="field" style={{ marginTop: 6 }} type="email" inputMode="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-          </label>
-          {error && <p role="alert" className="copper" style={{ fontSize: 15 }}>{error}</p>}
-          <button type="submit" className="btn btn-primary" style={{ marginTop: 6 }}>Start journaling</button>
-        </div>
-        <p className="muted" style={{ fontSize: 14, textAlign: 'center', marginTop: 18 }}>Sept 20 – Dec 5, 2026 · Heritage Church Brotherhood</p>
-      </form>
+
+        {step === 'email' && (
+          <form onSubmit={submitEmail} noValidate style={{ display: 'grid', gap: 14 }}>
+            <label>
+              <span className="label">Email</span>
+              <input className="field" style={{ marginTop: 6 }} type="email" inputMode="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+            </label>
+            {error && <p role="alert" className="copper" style={{ fontSize: 15 }}>{error}</p>}
+            <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? 'Checking…' : 'Continue'}</button>
+          </form>
+        )}
+
+        {step === 'pin' && (
+          <form onSubmit={submitPin} noValidate style={{ display: 'grid', gap: 14 }}>
+            <p className="muted" style={{ fontSize: 15 }}>{email}</p>
+            <label htmlFor="pin">
+              <span className="label">Your 4-digit PIN</span>
+              <PinInput id="pin" value={pin} onChange={setPin} autoFocus />
+            </label>
+            {error && <p role="alert" className="copper" style={{ fontSize: 15 }}>{error}</p>}
+            <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
+            <p className="muted" style={{ fontSize: 14 }}>Forgot your PIN? Ask a Brotherhood leader to reset it, then sign in and choose a new one.</p>
+            <button type="button" className="link" style={{ background: 'none', border: 0, padding: 0, font: 'inherit', justifySelf: 'start' }} onClick={() => { setStep('email'); setError(''); }}>Use a different email</button>
+          </form>
+        )}
+
+        {step === 'create' && (
+          <form onSubmit={submitCreate} noValidate style={{ display: 'grid', gap: 14 }}>
+            <p className="muted" style={{ fontSize: 15 }}>Setting up {email}</p>
+            <label>
+              <span className="label">First name</span>
+              <input className="field" style={{ marginTop: 6 }} autoComplete="given-name" value={name} onChange={(e) => setName(e.target.value)} />
+            </label>
+            <label htmlFor="newpin">
+              <span className="label">Choose a 4-digit PIN</span>
+              <PinInput id="newpin" value={pin} onChange={setPin} />
+            </label>
+            <label htmlFor="newpin2">
+              <span className="label">Enter it again</span>
+              <PinInput id="newpin2" value={pin2} onChange={setPin2} />
+            </label>
+            {error && <p role="alert" className="copper" style={{ fontSize: 15 }}>{error}</p>}
+            <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? 'Setting up…' : 'Start journaling'}</button>
+            <p className="muted" style={{ fontSize: 14 }}>You’ll use this email and PIN to see your journal on any phone or computer. Your entries are encrypted and stored under an anonymous member key, so no one browsing the Brotherhood’s records can read them or tell they’re yours.</p>
+            <button type="button" className="link" style={{ background: 'none', border: 0, padding: 0, font: 'inherit', justifySelf: 'start' }} onClick={() => { setStep('email'); setError(''); }}>Use a different email</button>
+          </form>
+        )}
+
+        <p className="muted" style={{ fontSize: 14, textAlign: 'center', marginTop: 22 }}>Sept 20 – Dec 5, 2026 · Heritage Church Brotherhood</p>
+      </div>
     </div>
   );
 }
