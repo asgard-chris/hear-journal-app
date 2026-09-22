@@ -165,6 +165,135 @@ const STEPS = [
 ];
 
 // ---------------------------------------------------------------------------
+// Add to Home Screen
+// ---------------------------------------------------------------------------
+// Android/Chrome offers a real install prompt. It fires once, early, so catch it here.
+let deferredInstall = null;
+const installListeners = new Set();
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredInstall = e;
+    installListeners.forEach((fn) => fn(true));
+  });
+  window.addEventListener('appinstalled', () => {
+    deferredInstall = null;
+    installListeners.forEach((fn) => fn(false));
+  });
+}
+
+function detectPlatform() {
+  const ua = navigator.userAgent || '';
+  const iOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  if (iOS) return 'ios';
+  if (/Android/i.test(ua)) return 'android';
+  return 'other';
+}
+
+function isInstalled() {
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+}
+
+const ShareIcon = () => (
+  <svg width="18" height="22" viewBox="0 0 18 22" aria-hidden="true" style={{ display: 'inline-block', verticalAlign: '-4px', margin: '0 3px' }}>
+    <path d="M9 1v13M5 5l4-4 4 4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M6 9H3a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V10a1 1 0 0 0-1-1h-3" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+  </svg>
+);
+const DotsIcon = () => (
+  <svg width="6" height="20" viewBox="0 0 6 20" aria-hidden="true" style={{ display: 'inline-block', verticalAlign: '-4px', margin: '0 5px' }}>
+    <circle cx="3" cy="3" r="2" fill="currentColor" /><circle cx="3" cy="10" r="2" fill="currentColor" /><circle cx="3" cy="17" r="2" fill="currentColor" />
+  </svg>
+);
+
+const INSTALL_STEPS = {
+  ios: [
+    <>Open this page in <b>Safari</b>.</>,
+    <>Tap the Share button <ShareIcon /> at the bottom of the screen. On iPad it’s at the top.</>,
+    <>Scroll down and tap <b>Add to Home Screen</b>.</>,
+    <>Tap <b>Add</b>. The HB icon appears on your home screen.</>,
+  ],
+  android: [
+    <>Open this page in <b>Chrome</b>.</>,
+    <>Tap the menu <DotsIcon /> in the top-right corner.</>,
+    <>Tap <b>Add to Home screen</b> or <b>Install app</b>.</>,
+    <>Tap <b>Install</b> or <b>Add</b>. The HB icon appears on your home screen.</>,
+  ],
+};
+
+function InstallGuide({ onClose }) {
+  const detected = detectPlatform();
+  const [tab, setTab] = useState(detected === 'android' ? 'android' : 'ios');
+  const [canPrompt, setCanPrompt] = useState(!!deferredInstall);
+  const installed = isInstalled();
+
+  useEffect(() => {
+    installListeners.add(setCanPrompt);
+    return () => installListeners.delete(setCanPrompt);
+  }, []);
+
+  const promptInstall = async () => {
+    if (!deferredInstall) return;
+    deferredInstall.prompt();
+    await deferredInstall.userChoice.catch(() => null);
+    deferredInstall = null;
+    setCanPrompt(false);
+  };
+
+  return (
+    <div role="dialog" aria-modal="true" aria-labelledby="install-title"
+      style={{ position: 'fixed', inset: 0, zIndex: 30, background: 'rgba(8,8,7,0.8)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}
+      onClick={onClose}>
+      <div className="panel" onClick={(e) => e.stopPropagation()}
+        style={{ width: '100%', maxWidth: 560, borderRadius: '10px 10px 0 0', padding: '22px 20px calc(env(safe-area-inset-bottom) + 24px)', maxHeight: '90vh', overflowY: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+          <h2 id="install-title" className="display" style={{ fontSize: 32 }}>Put it on your home screen</h2>
+          <button className="btn btn-ghost btn-small" onClick={onClose} aria-label="Close">Close</button>
+        </div>
+
+        {installed ? (
+          <p style={{ margin: '8px 0 4px' }}>You’re already using the home screen app. You’re all set.</p>
+        ) : (
+          <>
+            <p className="muted" style={{ fontSize: 15, marginBottom: 16 }}>Opens full screen like an app, one tap from your home screen. Nothing to download from an app store.</p>
+
+            {canPrompt && (
+              <div style={{ marginBottom: 18 }}>
+                <button className="btn btn-primary" onClick={promptInstall}>Install H.E.A.R. Journal</button>
+                <p className="muted" style={{ fontSize: 14, marginTop: 8, textAlign: 'center' }}>Or follow the steps below.</p>
+              </div>
+            )}
+
+            <div role="tablist" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 16 }}>
+              {[['ios', 'iPhone / iPad'], ['android', 'Android']].map(([key, label]) => (
+                <button key={key} role="tab" aria-selected={tab === key} className="btn btn-small"
+                  style={{ background: tab === key ? 'var(--rust)' : 'transparent', color: tab === key ? '#fbf6ef' : 'var(--stone)', borderColor: tab === key ? '#b86a3e' : 'var(--line)' }}
+                  onClick={() => setTab(key)}>{label}</button>
+              ))}
+            </div>
+
+            <ol style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 12 }}>
+              {INSTALL_STEPS[tab].map((step, i) => (
+                // eslint-disable-next-line react/no-array-index-key
+                <li key={i} style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                  <span className="letter" style={{ width: 32, height: 32, fontSize: 22 }} aria-hidden="true">{i + 1}</span>
+                  <span style={{ paddingTop: 4 }}>{step}</span>
+                </li>
+              ))}
+            </ol>
+
+            {tab === 'ios' && detected === 'ios' && (
+              <p className="muted" style={{ fontSize: 14, marginTop: 16 }}>In Chrome or another browser on iPhone, the Share button is in the address bar instead. Safari is the most reliable.</p>
+            )}
+            <p className="muted" style={{ fontSize: 14, marginTop: 16 }}>The first time you open it from your home screen, sign in once with your email and PIN. Your entries will be there.</p>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Small pieces
 // ---------------------------------------------------------------------------
 function Logo({ size = 56 }) {
@@ -296,6 +425,8 @@ export default function HEARJournal() {
   const [weekNum, setWeekNum] = useState(null);
   const [notice, setNotice] = useState('');
   const [syncState, setSyncState] = useState('idle'); // idle | syncing | synced | offline
+  const [showInstall, setShowInstall] = useState(false);
+  const [installTip, setInstallTip] = useState(() => !isInstalled() && !readJSON('hear:installTipDismissed', false));
 
   const translation = (user && user.translation) || 'ESV';
   const today = todayLocal();
@@ -755,6 +886,16 @@ export default function HEARJournal() {
         <button className="btn btn-ghost btn-small" onClick={signOut}>Sign out</button>
       </header>
 
+      {showInstall && <InstallGuide onClose={() => setShowInstall(false)} />}
+
+      {installTip && (
+        <div className="panel-framed" style={{ padding: '12px 14px', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
+          <p style={{ flex: 1, fontSize: 15 }}>Put H.E.A.R. on your home screen so it’s one tap away.</p>
+          <button className="btn btn-primary btn-small" style={{ width: 'auto' }} onClick={() => setShowInstall(true)}>Show me</button>
+          <button className="btn btn-ghost btn-small" aria-label="Dismiss" onClick={() => { setInstallTip(false); writeJSON('hear:installTipDismissed', true); }}>✕</button>
+        </div>
+      )}
+
       {user.track === 'challenge' && (
         <>
           <button className="panel entry-card" style={{ marginBottom: 14, padding: '14px 16px' }} onClick={() => setView('plan')}>
@@ -785,6 +926,11 @@ export default function HEARJournal() {
 
       <footer style={{ marginTop: 36, display: 'grid', gap: 16 }}>
         <TranslationPicker value={translation} onChange={(t) => saveUser({ ...user, translation: t })} />
+        {!isInstalled() && (
+          <p style={{ fontSize: 14 }}>
+            <button className="link" style={{ background: 'none', border: 0, padding: 0, font: 'inherit' }} onClick={() => setShowInstall(true)}>Add H.E.A.R. to your home screen</button>
+          </p>
+        )}
         <p className="muted" style={{ fontSize: 14 }}>
           {syncState === 'syncing' && 'Syncing… '}
           {syncState !== 'syncing' && pendingCount > 0 && `${pendingCount} ${pendingCount === 1 ? 'entry' : 'entries'} waiting to sync. `}
