@@ -2,6 +2,11 @@
 const crypto = require('crypto');
 
 const NOTION_VERSION = '2022-06-28';
+
+// The rooms. OPEN_GROUP is where everyone starts; add small groups to this list as they form.
+const OPEN_GROUP = 'Open Discussion';
+const GROUPS = [OPEN_GROUP, 'Nate · Tuesdays 6:30pm'];
+const ALL_GROUPS = 'ALL'; // church-wide announcements from a pastor or admin
 const MAX_ATTEMPTS = 5;
 const LOCK_MINUTES = 15;
 const SESSION_DAYS = 180;
@@ -114,6 +119,39 @@ async function schema() {
   });
   if (Object.keys(addEntries).length) entries = await notion(`/databases/${entriesId}`, 'PATCH', { properties: addEntries });
 
+  // Users also carry small-group assignment (set by hand in Notion)
+  if (!users.properties['Small Group']) {
+    const add = { 'Small Group': { rich_text: {} } };
+    users = await notion(`/databases/${usersId}`, 'PATCH', { properties: add });
+  }
+
+  // Message board is optional: it only exists when NOTION_POSTS_DB is configured
+  const postsId = process.env.NOTION_POSTS_DB || null;
+  let postsTitle = null;
+  if (postsId) {
+    let posts = await notion(`/databases/${postsId}`);
+    const addPosts = {};
+    const want = {
+      'Member Key': { rich_text: {} },
+      'Display Name': { rich_text: {} },
+      Group: { rich_text: {} },
+      Week: { number: {} },
+      Body: { rich_text: {} },
+      'Video URL': { url: {} },
+      'Parent Post': { rich_text: {} },
+      Status: { rich_text: {} },
+      Flags: { number: {} },
+      Likes: { number: {} },
+      'Liked By': { rich_text: {} },
+      'Allow Replies': { rich_text: {} },
+      'Moderated By': { rich_text: {} },
+      'Edited At': { date: {} },
+    };
+    Object.entries(want).forEach(([k, v]) => { if (!posts.properties[k]) addPosts[k] = v; });
+    if (Object.keys(addPosts).length) posts = await notion(`/databases/${postsId}`, 'PATCH', { properties: addPosts });
+    postsTitle = findProp(posts.properties, (k, pr) => pr.type === 'title');
+  }
+
   const up = users.properties;
   const ep = entries.properties;
   const startsWith = (w) => findProp(ep, (k) => k.toLowerCase().startsWith(w));
@@ -121,8 +159,11 @@ async function schema() {
   schemaCache = {
     usersId,
     entriesId,
+    postsId,
+    postsTitle,
     user: {
       title: findProp(up, (k, p) => p.type === 'title'),
+      role: findProp(up, (k) => /^role$/i.test(k)),
       email: findProp(up, (k, p) => p.type === 'email'),
       joined: findProp(up, (k, p) => p.type === 'date' && /join/i.test(k)),
     },
@@ -136,6 +177,30 @@ async function schema() {
     },
   };
   return schemaCache;
+}
+
+// Who is this signed-in man? Read fresh so group and role changes take effect right away.
+async function loadUser(uid) {
+  const s = await schema();
+  const page = await notion(`/pages/${uid}`);
+  const roleRaw = String((s.user.role && readProp(page, s.user.role)) || (page.properties.Role && page.properties.Role.select && page.properties.Role.select.name) || '');
+  return {
+    id: page.id,
+    key: readProp(page, 'Member Key') || '',
+    name: readProp(page, s.user.title) || '',
+    group: ((readProp(page, 'Small Group') || '').trim()) || OPEN_GROUP,
+    role: roleRaw.toLowerCase(),
+  };
+}
+
+const canModerate = (u) => u.role === 'facilitator' || u.role === 'admin' || u.role === 'leader' || u.role === 'pastor';
+const isAdmin = (u) => u.role === 'admin' || u.role === 'pastor';
+
+// Which rooms may this man post into?
+function roomsFor(u) {
+  const rooms = [OPEN_GROUP];
+  if (u.group && u.group !== OPEN_GROUP && GROUPS.includes(u.group)) rooms.push(u.group);
+  return rooms;
 }
 
 // ---------- member keys: random, not derived from name or email
@@ -235,4 +300,5 @@ function handler(fn) {
 module.exports = {
   MAX_ATTEMPTS, LOCK_MINUTES, env, httpError, notion, queryAll, toRich, fromRich, readProp,
   schema, hashPin, checkPin, signToken, readToken, handler, newMemberKey, seal, unseal, encKey,
+  loadUser, canModerate, isAdmin, roomsFor, fromRich, GROUPS, OPEN_GROUP, ALL_GROUPS,
 };

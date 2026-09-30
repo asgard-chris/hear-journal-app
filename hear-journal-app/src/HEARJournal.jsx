@@ -379,6 +379,222 @@ const PHASE_NOTES = {
 const STATUS_LABEL = { done: 'Complete', current: 'This week', upcoming: 'Upcoming', partial: 'Started', missed: 'Not journaled' };
 
 // ---------------------------------------------------------------------------
+// Weekly group board
+// ---------------------------------------------------------------------------
+function youTubeId(url) {
+  const m = String(url).match(/(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([\w-]{6,})/);
+  return m ? m[1] : null;
+}
+
+function VideoBlock({ url }) {
+  const yt = youTubeId(url);
+  if (yt) {
+    return (
+      <div style={{ position: 'relative', paddingTop: '56.25%', marginTop: 10, borderRadius: 6, overflow: 'hidden', border: '1px solid var(--line)' }}>
+        <iframe title="Video" src={`https://www.youtube-nocookie.com/embed/${yt}`} allow="accelerometer; clipboard-write; encrypted-media; picture-in-picture" allowFullScreen
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0 }} />
+      </div>
+    );
+  }
+  let host = url;
+  try { host = new URL(url).hostname.replace(/^www\./, ''); } catch (e) { /* keep raw */ }
+  return <a className="chip" style={{ marginTop: 10 }} href={url} target="_blank" rel="noopener noreferrer">▶ Watch on {host}</a>;
+}
+
+function timeAgo(ms) {
+  const mins = Math.round((Date.now() - ms) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.round(hrs / 24);
+  return days === 1 ? 'yesterday' : `${days}d ago`;
+}
+
+function Composer({ placeholder, initialBody = '', initialVideo = '', submitLabel, onSubmit, onCancel, busy }) {
+  const [body, setBody] = useState(initialBody);
+  const [video, setVideo] = useState(initialVideo);
+  const [showVideo, setShowVideo] = useState(!!initialVideo);
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      <textarea className="field" style={{ minHeight: 90 }} placeholder={placeholder} value={body} onChange={(e) => setBody(e.target.value)} />
+      {showVideo ? (
+        <input className="field" style={{ fontSize: 15 }} placeholder="Paste a YouTube, Instagram, Loom, Vimeo, Drive, or Dropbox link" value={video} onChange={(e) => setVideo(e.target.value)} />
+      ) : (
+        <button className="link" style={{ background: 'none', border: 0, padding: 0, font: 'inherit', justifySelf: 'start', fontSize: 14 }} onClick={() => setShowVideo(true)}>+ Add a video link</button>
+      )}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button className="btn btn-primary btn-small" style={{ width: 'auto' }} disabled={busy} onClick={() => onSubmit(body, video, () => { setBody(''); setVideo(''); setShowVideo(false); })}>{busy ? 'Posting…' : submitLabel}</button>
+        {onCancel && <button className="btn btn-ghost btn-small" onClick={onCancel}>Cancel</button>}
+      </div>
+    </div>
+  );
+}
+
+function Post({ post, me, replies = [], onAction, depth = 0, room }) {
+  const [replying, setReplying] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const mine = post.memberKey === me.key;
+  const removed = post.status === 'Removed';
+  const liked = (post.likedBy || []).includes(me.key);
+  const canReply = depth === 0 && (!post.announcement || post.allowReplies);
+
+  const act = async (action, body, video, done) => {
+    setBusy(true);
+    await onAction({ action, id: post.id, body, videoUrl: video, parentId: action === 'create' ? post.id : undefined, week: post.week, room });
+    setBusy(false);
+    setReplying(false);
+    setEditing(false);
+    if (done) done();
+  };
+
+  return (
+    <div style={{ marginLeft: depth ? 18 : 0, borderLeft: depth ? '1px solid var(--line)' : 'none', paddingLeft: depth ? 14 : 0 }}>
+      <div className={post.announcement ? 'panel panel-framed' : 'panel'} style={{ padding: '14px 16px', marginBottom: 10, opacity: removed ? 0.6 : 1 }}>
+        {post.announcement && <div className="label copper" style={{ fontSize: 12, letterSpacing: '0.18em', marginBottom: 6 }}>FOR EVERY GROUP</div>}
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline' }}>
+          <span className="label" style={{ fontSize: 15 }}>{post.author}{mine ? ' (you)' : ''}</span>
+          <span className="muted" style={{ fontSize: 13 }}>{timeAgo(post.created)}{post.editedAt ? ' · edited' : ''}</span>
+        </div>
+
+        {removed ? (
+          <p className="muted" style={{ fontStyle: 'italic', marginTop: 6 }}>Removed by a facilitator{post.moderatedBy ? ` · ${post.moderatedBy}` : ''}.</p>
+        ) : editing ? (
+          <div style={{ marginTop: 10 }}>
+            <Composer initialBody={post.body} initialVideo={post.videoUrl} submitLabel="Save" busy={busy}
+              onSubmit={(b, v) => act('edit', b, v)} onCancel={() => setEditing(false)} placeholder="Edit your post" />
+          </div>
+        ) : (
+          <>
+            {post.body && <p style={{ whiteSpace: 'pre-wrap', marginTop: 6 }}>{post.body}</p>}
+            {post.videoUrl && <VideoBlock url={post.videoUrl} />}
+          </>
+        )}
+
+        {post.status === 'Flagged' && me.canModerate && (
+          <p className="copper" style={{ fontSize: 13, marginTop: 8 }}>Flagged for review ({post.flags})</p>
+        )}
+
+        {!editing && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+            {!removed && (
+              <button className="btn btn-ghost btn-small" disabled={busy} aria-pressed={liked} onClick={() => act('like')}
+                style={{ color: liked ? 'var(--copper)' : undefined, borderColor: liked ? 'var(--rust)' : undefined }}>
+                {liked ? '★' : '☆'} {post.likes || 0}
+              </button>
+            )}
+            {!removed && canReply && <button className="btn btn-ghost btn-small" onClick={() => setReplying(!replying)}>Reply</button>}
+            {!removed && (mine || me.canModerate) && <button className="btn btn-ghost btn-small" onClick={() => setEditing(true)}>Edit</button>}
+            {!removed && (mine || me.canModerate) && <button className="btn btn-ghost btn-small btn-danger" disabled={busy} onClick={() => { if (window.confirm(mine ? 'Remove your post?' : 'Remove this post? The man who wrote it will see that a facilitator removed it.')) act('remove'); }}>Remove</button>}
+            {removed && me.canModerate && <button className="btn btn-ghost btn-small" disabled={busy} onClick={() => act('restore')}>Restore</button>}
+            {!removed && !mine && !me.canModerate && <button className="btn btn-ghost btn-small" disabled={busy} onClick={() => { if (window.confirm('Flag this post for your facilitator to review?')) act('flag'); }}>Flag</button>}
+          </div>
+        )}
+      </div>
+
+      {replying && (
+        <div style={{ marginLeft: 18, marginBottom: 12 }}>
+          <Composer placeholder={`Reply to ${post.author}…`} submitLabel="Post reply" busy={busy}
+            onSubmit={(b, v, done) => act('create', b, v, done)} onCancel={() => setReplying(false)} />
+        </div>
+      )}
+
+      {replies.map((r) => <Post key={r.id} post={r} me={me} onAction={onAction} depth={depth + 1} room={room} />)}
+    </div>
+  );
+}
+
+function GroupBoard({ week, token, onAuthFail, room, setRoom }) {
+  const [state, setState] = useState({ loading: true, posts: [], me: null, error: '' });
+  const [busy, setBusy] = useState(false);
+  const [announce, setAnnounce] = useState(false);
+  const [allowReplies, setAllowReplies] = useState(false);
+
+  const load = async () => {
+    try {
+      const data = await api(`posts?week=${week}&room=${encodeURIComponent(room)}`, { token });
+      setState({ loading: false, posts: data.posts, me: data.me, error: '' });
+    } catch (e) {
+      if (e.status === 401) { onAuthFail(); return; }
+      setState({ loading: false, posts: [], me: null, error: e.offline ? 'You’re offline. The board needs a connection.' : e.message });
+    }
+  };
+
+  useEffect(() => {
+    setState((prev) => ({ ...prev, loading: true }));
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [week, token, room]);
+
+  const onAction = async (payload) => {
+    setBusy(true);
+    try {
+      await api('posts', { method: 'POST', body: { room, ...payload, week: payload.week || week }, token });
+      await load();
+    } catch (e) {
+      if (e.status === 401) { onAuthFail(); return; }
+      window.alert(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (state.loading) return <p className="muted" style={{ fontSize: 15 }}>Loading your group…</p>;
+  if (state.error) return <div className="panel" style={{ padding: 16 }}><p className="muted">{state.error}</p></div>;
+
+  const top = state.posts.filter((p) => !p.parentId);
+  const repliesFor = (id) => state.posts.filter((p) => p.parentId === id);
+
+  const rooms = state.me.rooms || [room];
+  const pinned = top.filter((p) => p.announcement);
+  const rest = top.filter((p) => !p.announcement);
+
+  return (
+    <section>
+      {rooms.length > 1 && (
+        <div role="tablist" style={{ display: 'grid', gridTemplateColumns: `repeat(${rooms.length}, 1fr)`, gap: 8, marginBottom: 14 }}>
+          {rooms.map((r) => (
+            <button key={r} role="tab" aria-selected={r === room} className="btn btn-small"
+              style={{ background: r === room ? 'var(--rust)' : 'transparent', color: r === room ? '#fbf6ef' : 'var(--stone)', borderColor: r === room ? '#b86a3e' : 'var(--line)' }}
+              onClick={() => setRoom(r)}>{r}</button>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', margin: '8px 0 6px' }}>
+        <h2 className="display" style={{ fontSize: 30 }}>{room}</h2>
+        {state.me.canModerate && <span className="label copper" style={{ fontSize: 13 }}>{state.me.isAdmin ? 'Admin' : 'Facilitator'}</span>}
+      </div>
+      <p className="muted" style={{ fontSize: 14, marginBottom: 14 }}>One verse you highlighted, one action you took. Week {week}.</p>
+
+      <div className="panel" style={{ padding: 16, marginBottom: 18 }}>
+        <Composer placeholder={announce ? 'Write to every group…' : `Share with ${room}…`} submitLabel={announce ? 'Post to every group' : 'Post'} busy={busy}
+          onSubmit={(b, v, done) => onAction({ action: 'create', body: b, videoUrl: v, announcement: announce, allowReplies }).then(done)} />
+        {state.me.isAdmin && (
+          <div style={{ marginTop: 12, display: 'grid', gap: 8 }}>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 15 }}>
+              <input type="checkbox" checked={announce} onChange={(e) => setAnnounce(e.target.checked)} /> Post to every group
+            </label>
+            {announce && (
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 15 }}>
+                <input type="checkbox" checked={allowReplies} onChange={(e) => setAllowReplies(e.target.checked)} /> Let men reply in their own group
+              </label>
+            )}
+          </div>
+        )}
+      </div>
+
+      {pinned.map((p) => <Post key={p.id} post={p} me={state.me} replies={repliesFor(p.id)} onAction={onAction} room={room} />)}
+
+      {rest.length === 0
+        ? <div className="panel" style={{ padding: 18 }}><p className="muted">No posts yet this week. Be the first.</p></div>
+        : rest.map((p) => <Post key={p.id} post={p} me={state.me} replies={repliesFor(p.id)} onAction={onAction} room={room} />)}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -426,9 +642,12 @@ export default function HEARJournal() {
   const [notice, setNotice] = useState('');
   const [syncState, setSyncState] = useState('idle'); // idle | syncing | synced | offline
   const [showInstall, setShowInstall] = useState(false);
+  const [weekTab, setWeekTab] = useState('journal');
+  const [room, setRoom] = useState('');
   const [installTip, setInstallTip] = useState(() => !isInstalled() && !readJSON('hear:installTipDismissed', false));
 
   const translation = (user && user.translation) || 'ESV';
+  const boardOn = !!(user && user.board);
   const today = todayLocal();
   const thisWeek = weekForDate(today);
   const token = user && user.token;
@@ -502,9 +721,25 @@ export default function HEARJournal() {
     }
   };
 
+  // Keep group, role, and board access current — a leader may change them in Notion any time
+  const refreshProfile = async (tok) => {
+    try {
+      const r = await api('auth', { method: 'POST', body: { action: 'me' }, token: tok });
+      setUser((prev) => {
+        if (!prev) return prev;
+        const next = { ...prev, name: r.user.name || prev.name, group: r.user.group || '', groups: r.user.groups || prev.groups || [], role: r.user.role || '', canModerate: !!r.user.canModerate, board: !!r.board };
+        writeJSON(USER_KEY, next);
+        return next;
+      });
+    } catch (e) {
+      if (e.status === 401) expireSession();
+    }
+  };
+
   // Sync when the app opens and whenever the phone comes back online
   useEffect(() => {
     if (!token) return undefined;
+    refreshProfile(token);
     sync(token, email, readJSON(entriesKey(email), []));
     const onOnline = () => sync(token, email, readJSON(entriesKey(email), []));
     window.addEventListener('online', onOnline);
@@ -625,10 +860,10 @@ export default function HEARJournal() {
     return (
       <Welcome
         initialEmail={(user && user.email) || ''}
-        onSignedIn={(serverUser, tok) => {
+        onSignedIn={(serverUser, tok, boardEnabled) => {
           const prior = readJSON(USER_KEY, null);
           const keep = prior && prior.email === serverUser.email ? prior : {};
-          const u = { track: null, translation: 'ESV', ...keep, name: serverUser.name, email: serverUser.email, token: tok };
+          const u = { track: null, translation: 'ESV', ...keep, name: serverUser.name, email: serverUser.email, token: tok, group: serverUser.group || '', groups: serverUser.groups || [], role: serverUser.role || '', canModerate: !!serverUser.canModerate, board: boardEnabled };
           saveUser(u);
           setEntries(loadEntries(u.email));
           setView(u.track ? 'home' : 'track');
@@ -794,6 +1029,20 @@ export default function HEARJournal() {
   const goHome = () => { setWeekNum(null); setView('home'); };
 
   // =========================================================================
+  // PROFILE — display name and small group
+  // =========================================================================
+  if (view === 'profile') {
+    return <ProfileScreen user={user} token={token} onDone={(updated) => {
+      if (updated) {
+        const next = { ...user, name: updated.name, group: updated.group, role: updated.role, canModerate: !!updated.canModerate };
+        saveUser(next);
+        setRoom(updated.group);
+      }
+      setView('home');
+    }} />;
+  }
+
+  // =========================================================================
   // THE PLAN (all 11 weeks)
   // =========================================================================
   if (view === 'plan') {
@@ -862,8 +1111,25 @@ export default function HEARJournal() {
           </div>
         </div>
         <WeekCard w={w} count={list.length} isCurrent={today >= w.start && today <= w.end} translation={translation} onJournal={() => startNew(w.week)} />
-        <h2 className="display" style={{ fontSize: 30, margin: '8px 0 12px' }}>Week {w.week} entries</h2>
-        {list.length ? entryList(list) : <div className="panel" style={{ padding: 20 }}><p>No entries for this week yet.</p></div>}
+        <div role="tablist" style={{ display: 'grid', gridTemplateColumns: boardOn ? '1fr 1fr' : '1fr', gap: 8, margin: '10px 0 16px' }}>
+          <button role="tab" aria-selected={weekTab === 'journal'} className="btn btn-small"
+            style={{ background: weekTab === 'journal' ? 'var(--rust)' : 'transparent', color: weekTab === 'journal' ? '#fbf6ef' : 'var(--stone)', borderColor: weekTab === 'journal' ? '#b86a3e' : 'var(--line)' }}
+            onClick={() => setWeekTab('journal')}>My entries</button>
+          {boardOn && (
+            <button role="tab" aria-selected={weekTab === 'board'} className="btn btn-small"
+              style={{ background: weekTab === 'board' ? 'var(--rust)' : 'transparent', color: weekTab === 'board' ? '#fbf6ef' : 'var(--stone)', borderColor: weekTab === 'board' ? '#b86a3e' : 'var(--line)' }}
+              onClick={() => setWeekTab('board')}>Group board</button>
+          )}
+        </div>
+
+        {weekTab === 'board' && boardOn ? (
+          <GroupBoard week={w.week} token={token} onAuthFail={expireSession} room={room || user.group || 'Open Discussion'} setRoom={setRoom} />
+        ) : (
+          <>
+            <h2 className="display" style={{ fontSize: 30, margin: '8px 0 12px' }}>Week {w.week} entries</h2>
+            {list.length ? entryList(list) : <div className="panel" style={{ padding: 20 }}><p>No entries for this week yet.</p></div>}
+          </>
+        )}
         <button className="btn btn-ghost btn-small" style={{ marginTop: 20 }} onClick={goHome}>Home</button>
       </div>
     );
@@ -880,7 +1146,8 @@ export default function HEARJournal() {
           <Logo size={44} />
           <div>
             <div className="display" style={{ fontSize: 26 }}>H.E.A.R. Journal</div>
-            <div className="muted" style={{ fontSize: 14 }}>{user.name}</div>
+            <button className="muted" style={{ fontSize: 14, background: 'none', border: 0, padding: 0, font: 'inherit', textAlign: 'left', cursor: 'pointer' }}
+              onClick={() => setView('profile')}>{user.name}{user.group ? ` · ${user.group}` : ''} ✎</button>
           </div>
         </div>
         <button className="btn btn-ghost btn-small" onClick={signOut}>Sign out</button>
@@ -906,6 +1173,16 @@ export default function HEARJournal() {
             <ProgressBar entries={entries} today={today} />
           </button>
           <WeekCard w={thisWeek} count={thisWeekCount} isCurrent={today >= thisWeek.start && today <= thisWeek.end} translation={translation} onJournal={() => startNew(thisWeek.week)} />
+          {boardOn && (
+            <button className="panel entry-card" style={{ marginBottom: 20, padding: '14px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}
+              onClick={() => { setWeekTab('board'); openWeek(thisWeek.week); }}>
+              <span>
+                <span className="display" style={{ fontSize: 22, display: 'block' }}>Group board</span>
+                <span className="muted" style={{ fontSize: 14 }}>This week’s group conversation</span>
+              </span>
+              <span className="label copper" style={{ fontSize: 14 }}>Open ›</span>
+            </button>
+          )}
         </>
       )}
 
@@ -941,6 +1218,64 @@ export default function HEARJournal() {
           Switch to <button className="link" style={{ background: 'none', border: 0, padding: 0, font: 'inherit' }} onClick={() => setView('track')}>{user.track === 'challenge' ? 'journaling on your own' : 'the Challenge plan'}</button>
         </p>
       </footer>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Profile: how your name shows on the board, and which group you're in
+// ---------------------------------------------------------------------------
+function ProfileScreen({ user, token, onDone }) {
+  const [name, setName] = useState(user.name || '');
+  const [group, setGroup] = useState(user.group || 'Open Discussion');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const groups = user.groups && user.groups.length ? user.groups : ['Open Discussion', 'Nate · Tuesdays 6:30pm'];
+
+  const save = async () => {
+    if (!name.trim()) { setError('Enter the name you want on your posts.'); return; }
+    setBusy(true);
+    setError('');
+    try {
+      const r = await api('auth', { method: 'POST', body: { action: 'profile', name: name.trim(), group }, token });
+      onDone(r.user);
+    } catch (e) {
+      setError(e.message);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="shell">
+      <button className="btn btn-ghost btn-small" onClick={() => onDone(null)}>Back</button>
+      <h1 className="display" style={{ fontSize: 44, margin: '22px 0 4px' }}>Your details</h1>
+      <p className="muted" style={{ marginBottom: 24 }}>Your journal stays private either way. This is only how you appear on the group board.</p>
+
+      <div style={{ display: 'grid', gap: 18 }}>
+        <label>
+          <span className="label">Name on your posts</span>
+          <input className="field" style={{ marginTop: 6 }} value={name} onChange={(e) => setName(e.target.value)} placeholder="Chris G." />
+          <span className="muted" style={{ fontSize: 14 }}>First name and last initial works well — there’s more than one Mike.</span>
+        </label>
+
+        <div>
+          <span className="label">Your small group</span>
+          <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+            {groups.map((g) => (
+              <button key={g} className="panel entry-card" style={{ padding: '14px 16px', borderColor: g === group ? 'var(--copper)' : undefined }} onClick={() => setGroup(g)}>
+                <span style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                  <span>{g}</span>
+                  {g === group && <span className="copper">✓</span>}
+                </span>
+              </button>
+            ))}
+          </div>
+          <p className="muted" style={{ fontSize: 14, marginTop: 8 }}>You can post in Open Discussion and in your own group. Change this any time.</p>
+        </div>
+
+        {error && <p role="alert" className="copper" style={{ fontSize: 15 }}>{error}</p>}
+        <button className="btn btn-primary" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save'}</button>
+      </div>
     </div>
   );
 }
@@ -998,7 +1333,7 @@ function Welcome({ initialEmail, onSignedIn }) {
     if (pin.length !== 4) { setError('Enter your 4-digit PIN.'); return; }
     run(async () => {
       const r = await api('auth', { method: 'POST', body: { action: 'signin', email, pin } });
-      onSignedIn(r.user, r.token);
+      onSignedIn(r.user, r.token, r.board);
     });
   };
 
@@ -1009,7 +1344,7 @@ function Welcome({ initialEmail, onSignedIn }) {
     if (pin !== pin2) { setError('The two PINs don’t match.'); return; }
     run(async () => {
       const r = await api('auth', { method: 'POST', body: { action: 'signin', email, pin, name } });
-      onSignedIn(r.user, r.token);
+      onSignedIn(r.user, r.token, r.board);
     });
   };
 
