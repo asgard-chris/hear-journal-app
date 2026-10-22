@@ -1297,7 +1297,7 @@ function ProfileScreen({ user, token, onDone }) {
   const [group, setGroup] = useState(user.group || 'Open Discussion');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const groups = user.groups && user.groups.length ? user.groups : ['Open Discussion', 'Nate · Tuesdays 6:30pm'];
+  const groups = user.groups && user.groups.length ? user.groups : ['Open Discussion'];
 
   const save = async () => {
     if (!name.trim()) { setError('Enter the name you want on your posts.'); return; }
