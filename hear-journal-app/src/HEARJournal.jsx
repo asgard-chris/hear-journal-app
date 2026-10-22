@@ -381,6 +381,20 @@ const STATUS_LABEL = { done: 'Complete', current: 'This week', upcoming: 'Upcomi
 // ---------------------------------------------------------------------------
 // Weekly group board
 // ---------------------------------------------------------------------------
+const MegaphoneIcon = ({ size = 15 }) => (
+  <svg width={size} height={size} viewBox="0 0 20 20" fill="none" aria-hidden="true" style={{ flex: 'none' }}>
+    <path d="M3 8.5v3a1.5 1.5 0 0 0 1.5 1.5H6l9 4V3L6 7H4.5A1.5 1.5 0 0 0 3 8.5Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+    <path d="M6 13v3.5a1 1 0 0 0 1 1h1.2a1 1 0 0 0 1-1V14" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+  </svg>
+);
+
+const NewDot = () => (
+  <span aria-hidden="true" style={{ width: 9, height: 9, borderRadius: '50%', background: 'var(--copper)', boxShadow: '0 0 0 3px rgba(207,129,80,0.25)', display: 'inline-block', flex: 'none' }} />
+);
+
+// What the man has already seen on the board, per week, on this device
+const seenKey = (email, week) => `hear:seen:${String(email).toLowerCase()}:${week}`;
+
 function youTubeId(url) {
   const m = String(url).match(/(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([\w-]{6,})/);
   return m ? m[1] : null;
@@ -452,7 +466,11 @@ function Post({ post, me, replies = [], onAction, depth = 0, room }) {
   return (
     <div style={{ marginLeft: depth ? 18 : 0, borderLeft: depth ? '1px solid var(--line)' : 'none', paddingLeft: depth ? 14 : 0 }}>
       <div className={post.announcement ? 'panel panel-framed' : 'panel'} style={{ padding: '14px 16px', marginBottom: 10, opacity: removed ? 0.6 : 1 }}>
-        {post.announcement && <div className="label copper" style={{ fontSize: 12, letterSpacing: '0.18em', marginBottom: 6 }}>FOR EVERY GROUP</div>}
+        {post.announcement && (
+          <div className="label copper" style={{ fontSize: 12, letterSpacing: '0.16em', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 7 }}>
+            <MegaphoneIcon /> FROM {post.author.toUpperCase()}
+          </div>
+        )}
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline' }}>
           <span className="label" style={{ fontSize: 15 }}>{post.author}{mine ? ' (you)' : ''}</span>
           <span className="muted" style={{ fontSize: 13 }}>{timeAgo(post.created)}{post.editedAt ? ' · edited' : ''}</span>
@@ -505,7 +523,7 @@ function Post({ post, me, replies = [], onAction, depth = 0, room }) {
   );
 }
 
-function GroupBoard({ week, token, onAuthFail, room, setRoom }) {
+function GroupBoard({ week, token, onAuthFail, room, setRoom, onSeen }) {
   const [state, setState] = useState({ loading: true, posts: [], me: null, error: '' });
   const [busy, setBusy] = useState(false);
   const [announce, setAnnounce] = useState(false);
@@ -515,6 +533,7 @@ function GroupBoard({ week, token, onAuthFail, room, setRoom }) {
     try {
       const data = await api(`posts?week=${week}&room=${encodeURIComponent(room)}`, { token });
       setState({ loading: false, posts: data.posts, me: data.me, error: '' });
+      if (onSeen) onSeen();
     } catch (e) {
       if (e.status === 401) { onAuthFail(); return; }
       setState({ loading: false, posts: [], me: null, error: e.offline ? 'You’re offline. The board needs a connection.' : e.message });
@@ -645,6 +664,7 @@ export default function HEARJournal() {
   const [weekTab, setWeekTab] = useState('journal');
   const [room, setRoom] = useState('');
   const [installTip, setInstallTip] = useState(() => !isInstalled() && !readJSON('hear:installTipDismissed', false));
+  const [alert, setAlert] = useState(null); // { fromKip, by, newPosts }
 
   const translation = (user && user.translation) || 'ESV';
   const boardOn = !!(user && user.board);
@@ -735,6 +755,33 @@ export default function HEARJournal() {
       if (e.status === 401) expireSession();
     }
   };
+
+  // Has anything new landed on the board — especially a message from a pastor?
+  const checkBoard = async (tok, forEmail, week) => {
+    try {
+      const sum = await api(`posts?week=${week}&summary=1`, { token: tok });
+      const seen = readJSON(seenKey(forEmail, week), 0);
+      setAlert({
+        fromKip: sum.latestAnnouncement > seen,
+        by: sum.announcementBy || '',
+        newPosts: sum.latestPost > seen ? sum.posts : 0,
+      });
+    } catch (e) {
+      if (e.status === 401) expireSession();
+      // offline or board off: no alert, nothing to say
+    }
+  };
+
+  const markBoardSeen = (week) => {
+    writeJSON(seenKey(email, week), Date.now());
+    setAlert(null);
+  };
+
+  useEffect(() => {
+    if (!token || !boardOn) return;
+    checkBoard(token, email, thisWeek.week);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, email, boardOn, thisWeek.week]);
 
   // Sync when the app opens and whenever the phone comes back online
   useEffect(() => {
@@ -1118,12 +1165,15 @@ export default function HEARJournal() {
           {boardOn && (
             <button role="tab" aria-selected={weekTab === 'board'} className="btn btn-small"
               style={{ background: weekTab === 'board' ? 'var(--rust)' : 'transparent', color: weekTab === 'board' ? '#fbf6ef' : 'var(--stone)', borderColor: weekTab === 'board' ? '#b86a3e' : 'var(--line)' }}
-              onClick={() => setWeekTab('board')}>Group board</button>
+              onClick={() => setWeekTab('board')}>
+              Group board{alert && (alert.fromKip || alert.newPosts > 0) && w.week === thisWeek.week ? ' •' : ''}
+            </button>
           )}
         </div>
 
         {weekTab === 'board' && boardOn ? (
-          <GroupBoard week={w.week} token={token} onAuthFail={expireSession} room={room || user.group || 'Open Discussion'} setRoom={setRoom} />
+          <GroupBoard week={w.week} token={token} onAuthFail={expireSession} room={room || user.group || 'Open Discussion'} setRoom={setRoom}
+            onSeen={() => markBoardSeen(w.week)} />
         ) : (
           <>
             <h2 className="display" style={{ fontSize: 30, margin: '8px 0 12px' }}>Week {w.week} entries</h2>
@@ -1173,12 +1223,29 @@ export default function HEARJournal() {
             <ProgressBar entries={entries} today={today} />
           </button>
           <WeekCard w={thisWeek} count={thisWeekCount} isCurrent={today >= thisWeek.start && today <= thisWeek.end} translation={translation} onJournal={() => startNew(thisWeek.week)} />
+          {boardOn && alert && alert.fromKip && (
+            <button className="panel panel-framed" style={{ width: '100%', textAlign: 'left', marginBottom: 14, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer' }}
+              onClick={() => { setWeekTab('board'); openWeek(thisWeek.week); }}>
+              <span className="copper" style={{ display: 'flex' }}><MegaphoneIcon size={20} /></span>
+              <span style={{ flex: 1 }}>
+                <span className="label copper" style={{ fontSize: 13, display: 'block' }}>New message{alert.by ? ` from ${alert.by}` : ''}</span>
+                <span className="muted" style={{ fontSize: 14 }}>Tap to read it on the group board.</span>
+              </span>
+              <NewDot />
+            </button>
+          )}
+
           {boardOn && (
             <button className="panel entry-card" style={{ marginBottom: 20, padding: '14px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}
               onClick={() => { setWeekTab('board'); openWeek(thisWeek.week); }}>
               <span>
-                <span className="display" style={{ fontSize: 22, display: 'block' }}>Group board</span>
-                <span className="muted" style={{ fontSize: 14 }}>This week’s group conversation</span>
+                <span className="display" style={{ fontSize: 22, display: 'flex', alignItems: 'center', gap: 9 }}>
+                  Group board
+                  {alert && (alert.fromKip || alert.newPosts > 0) && <NewDot />}
+                </span>
+                <span className="muted" style={{ fontSize: 14 }}>
+                  {alert && alert.newPosts > 0 ? `${alert.newPosts} new ${alert.newPosts === 1 ? 'post' : 'posts'} this week` : 'This week’s group conversation'}
+                </span>
               </span>
               <span className="label copper" style={{ fontSize: 14 }}>Open ›</span>
             </button>
@@ -1258,20 +1325,24 @@ function ProfileScreen({ user, token, onDone }) {
           <span className="muted" style={{ fontSize: 14 }}>First name and last initial works well — there’s more than one Mike.</span>
         </label>
 
-        <div>
-          <span className="label">Your small group</span>
-          <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
-            {groups.map((g) => (
-              <button key={g} className="panel entry-card" style={{ padding: '14px 16px', borderColor: g === group ? 'var(--copper)' : undefined }} onClick={() => setGroup(g)}>
-                <span style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
-                  <span>{g}</span>
-                  {g === group && <span className="copper">✓</span>}
-                </span>
-              </button>
-            ))}
+        {groups.length > 1 ? (
+          <div>
+            <span className="label">Your small group</span>
+            <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
+              {groups.map((g) => (
+                <button key={g} className="panel entry-card" style={{ padding: '14px 16px', borderColor: g === group ? 'var(--copper)' : undefined }} onClick={() => setGroup(g)}>
+                  <span style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                    <span>{g}</span>
+                    {g === group && <span className="copper">✓</span>}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <p className="muted" style={{ fontSize: 14, marginTop: 8 }}>You can post in Open Discussion and in your own group. Change this any time.</p>
           </div>
-          <p className="muted" style={{ fontSize: 14, marginTop: 8 }}>You can post in Open Discussion and in your own group. Change this any time.</p>
-        </div>
+        ) : (
+          <p className="muted" style={{ fontSize: 14 }}>Everyone is in one group for now: <span className="copper">{groups[0]}</span>.</p>
+        )}
 
         {error && <p role="alert" className="copper" style={{ fontSize: 15 }}>{error}</p>}
         <button className="btn btn-primary" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save'}</button>
