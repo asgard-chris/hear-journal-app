@@ -10,7 +10,8 @@ const {
 function profileOf(s, page, name, email) {
   const roleRaw = String((s.user.role && readProp(page, s.user.role))
     || (page && page.properties.Role && page.properties.Role.select && page.properties.Role.select.name) || '');
-  const group = String((page ? readProp(page, 'Small Group') : '') || '').trim() || OPEN_GROUP;
+  const raw = String((page ? readProp(page, 'Small Group') : '') || '').trim();
+  const group = GROUPS.includes(raw) ? raw : OPEN_GROUP; // a retired or unknown group falls back to the open room
   const role = roleRaw.toLowerCase();
   return { name, email, group, role, canModerate: canModerate({ role }), groups: GROUPS };
 }

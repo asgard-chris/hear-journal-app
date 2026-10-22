@@ -5,7 +5,8 @@ const NOTION_VERSION = '2022-06-28';
 
 // The rooms. OPEN_GROUP is where everyone starts; add small groups to this list as they form.
 const OPEN_GROUP = 'Open Discussion';
-const GROUPS = [OPEN_GROUP, 'Nate · Tuesdays 6:30pm'];
+// One room for now. Add small groups to this list when they're ready.
+const GROUPS = [OPEN_GROUP];
 const ALL_GROUPS = 'ALL'; // church-wide announcements from a pastor or admin
 const MAX_ATTEMPTS = 5;
 const LOCK_MINUTES = 15;
@@ -188,7 +189,10 @@ async function loadUser(uid) {
     id: page.id,
     key: readProp(page, 'Member Key') || '',
     name: readProp(page, s.user.title) || '',
-    group: ((readProp(page, 'Small Group') || '').trim()) || OPEN_GROUP,
+    group: (() => {
+      const g = (readProp(page, 'Small Group') || '').trim();
+      return GROUPS.includes(g) ? g : OPEN_GROUP; // unknown or blank falls back to the open room
+    })(),
     role: roleRaw.toLowerCase(),
   };
 }
@@ -288,6 +292,7 @@ function handler(fn) {
     res.setHeader('Cache-Control', 'no-store');
     try {
       const out = await fn(req, res);
+      if (res.headersSent || res.__sent) return; // handler already wrote its own response (e.g. the digest page)
       res.status(200).json(out);
     } catch (e) {
       const status = e.status || 500;

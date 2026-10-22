@@ -72,6 +72,21 @@ module.exports = handler(async (req) => {
   if (req.method === 'GET') {
     const week = Number((req.query && req.query.week) || 0);
     if (!week) throw httpError(400, 'Which week?');
+
+    // Small, cheap check the home screen uses to show the "new from Kip" alert
+    if (req.query.summary === '1') {
+      const rows = await queryAll(postsId, { property: 'Week', number: { equals: week } });
+      const live = rows.map(toPost).filter((p) => p.status !== 'Removed');
+      const mine = live.filter((p) => p.announcement || roomsFor(me).includes(p.group));
+      const notes = mine.filter((p) => p.announcement).sort((a, b) => b.created - a.created);
+      return {
+        posts: mine.length,
+        announcements: notes.length,
+        latestAnnouncement: notes.length ? notes[0].created : 0,
+        announcementBy: notes.length ? notes[0].author : '',
+        latestPost: mine.length ? Math.max(...mine.map((p) => p.created)) : 0,
+      };
+    }
     const room = String((req.query && req.query.room) || OPEN_GROUP);
     if (!roomsFor(me).includes(room)) throw httpError(403, 'That isn’t one of your groups.');
     const pages = await queryAll(postsId, {
