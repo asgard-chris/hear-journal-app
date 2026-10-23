@@ -1,4 +1,5 @@
 # H.E.A.R. Journal
+Test
 
 A personal Scripture journaling app built for **Heritage Church Brotherhood's "Real Manhood: Built to Last" challenge** (September 20 – December 5, 2026).
 
